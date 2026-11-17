@@ -1,26 +1,37 @@
 import { IRequest, error } from 'itty-router'
 import { Environment } from './types'
 
-// assets are stored in the bucket under the /uploads path
-function getAssetObjectName(uploadId: string) {
-	return `uploads/${uploadId.replace(/[^a-zA-Z0-9\_\-]+/g, '_')}`
+// Larger files are refused. A pasted screenshot is well under this.
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+// assets are stored in the bucket under uploads/{roomId}/, so a room's
+// uploads can only be reached with a token for that room. The room id is
+// checked in worker.ts before we get here.
+function getAssetObjectName(roomId: string, uploadId: string) {
+	return `uploads/${roomId}/${uploadId.replace(/[^a-zA-Z0-9\_\-]+/g, '_')}`
 }
 
 // when a user uploads an asset, we store it in the bucket. we only allow image and video assets.
 export async function handleAssetUpload(request: IRequest, env: Environment) {
-	const objectName = getAssetObjectName(request.params.uploadId)
+	const objectName = getAssetObjectName(request.params.roomId, request.params.uploadId)
 
 	const contentType = request.headers.get('content-type') ?? ''
 	if (!contentType.startsWith('image/') && !contentType.startsWith('video/')) {
 		return error(400, 'Invalid content type')
 	}
 
+	// The size has to be known up front: R2 needs it, and it is how we refuse
+	// large files without reading them.
+	const size = Number(request.headers.get('content-length'))
+	if (!size) return error(411, 'Content-Length required')
+	if (size > MAX_UPLOAD_BYTES) return error(413, 'File too large')
+
 	if (await env.TLDRAW_BUCKET.head(objectName)) {
 		return error(409, 'Upload already exists')
 	}
 
 	await env.TLDRAW_BUCKET.put(objectName, request.body, {
-		httpMetadata: request.headers,
+		httpMetadata: { contentType },
 	})
 
 	return { ok: true }
@@ -32,10 +43,14 @@ export async function handleAssetDownload(
 	env: Environment,
 	ctx: ExecutionContext
 ) {
-	const objectName = getAssetObjectName(request.params.uploadId)
+	const objectName = getAssetObjectName(request.params.roomId, request.params.uploadId)
 
-	// if we have a cached response for this request (automatically handling ranges etc.), return it
-	const cacheKey = new Request(request.url, { headers: request.headers })
+	// if we have a cached response for this request (automatically handling ranges etc.), return it.
+	// The token is left out of the key: it changes, the file does not, and the
+	// token was already checked in worker.ts.
+	const cacheUrl = new URL(request.url)
+	cacheUrl.search = ''
+	const cacheKey = new Request(cacheUrl.toString(), { headers: request.headers })
 	const cachedResponse = await caches.default.match(cacheKey)
 	if (cachedResponse) {
 		return cachedResponse
@@ -55,14 +70,16 @@ export async function handleAssetDownload(
 	const headers = new Headers()
 	object.writeHttpMetadata(headers)
 
-	// assets are immutable, so we can cache them basically forever:
+	// assets are immutable, so we can cache them basically forever. ("public"
+	// is needed for the worker's own cache to keep it; that cache is only read
+	// after the room token has been checked.)
 	headers.set('cache-control', 'public, max-age=31536000, immutable')
 	headers.set('etag', object.httpEtag)
+	// An uploaded SVG opened on its own must not run scripts.
+	headers.set('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	headers.set('x-content-type-options', 'nosniff')
 
-	// we set CORS headers so all clients can access assets. we do this here so our `cors` helper in
-	// worker.ts doesn't try to set extra cors headers on responses that have been read from the
-	// cache, which isn't allowed by cloudflare.
-	headers.set('access-control-allow-origin', '*')
+	// CORS headers are added in worker.ts, for our own origins only.
 
 	// cloudflare doesn't set the content-range header automatically in writeHttpMetadata, so we
 	// need to do it ourselves.

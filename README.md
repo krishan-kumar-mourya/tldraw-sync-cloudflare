@@ -1,3 +1,31 @@
+# PeerTeach whiteboard sync worker
+
+The tldraw sync server for PeerTeach remote coaching, based on tldraw's
+Cloudflare template. What we changed:
+
+- **Every route needs a room token** from the PeerTeach backend
+  (`whiteboard_token` from `/student|teacher/remote-coaching/access`): an
+  HS256 JWT `{room, sub, exp}` signed with `WHITEBOARD_SECRET`, which this
+  worker and the backend share. See `worker/auth.ts`.
+- Uploads live under their room (`/uploads/:roomId/:uploadId`), max 10 MB.
+- CORS and WebSocket origins are limited to `ALLOWED_ORIGINS`
+  (`wrangler.toml`, per environment). `/unfurl` is removed.
+- `[env.staging]` is a separate worker with its own bucket.
+
+Local: put `WHITEBOARD_SECRET` (same as the backend's `.envrc`) and
+`ALLOWED_ORIGINS=http://localhost:1234,...` in `.dev.vars`, then
+`yarn dev:worker` (port 5172).
+
+**Versions:** `tldraw`, `@tldraw/sync`, `@tldraw/sync-core` and
+`@tldraw/tlschema` are pinned to exactly 3.11.1 here and in the PeerTeach
+client. tldraw sync refuses a client newer than its server, so upgrade both
+together, worker first. tldraw 4 needs a paid licence key.
+
+Deploy steps: see "Deploying the whiteboard lock-down" in
+`peerteach-match/docs/remote-coaching-plan.md`.
+
+---
+
 # tldraw sync server
 
 This is a production-ready backend for [tldraw sync](https://tldraw.dev/docs/sync).

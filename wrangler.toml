@@ -2,6 +2,12 @@ name = "tldraw-worker"
 main = "worker/worker.ts"
 compatibility_date = "2024-07-01"
 
+# Production. WHITEBOARD_SECRET is not here: set it with
+# `wrangler secret put WHITEBOARD_SECRET` (and locally in .dev.vars). It must
+# match WHITEBOARD_SECRET in the PeerTeach backend's environment.
+[vars]
+ALLOWED_ORIGINS = "https://app.peerteach.org"
+
 [dev]
 port = 5172
 ip = "0.0.0.0"
@@ -22,3 +28,21 @@ new_classes = ["TldrawDurableObject"]
 binding = 'TLDRAW_BUCKET'
 bucket_name = 'peerteach-tldraw-content'
 preview_bucket_name = 'tldraw-content-preview'
+
+# Staging: `wrangler deploy --env staging`, a separate worker
+# (tldraw-worker-staging) with its own bucket and its own secret
+# (`wrangler secret put WHITEBOARD_SECRET --env staging`).
+[env.staging]
+name = "tldraw-worker-staging"
+
+[env.staging.vars]
+ALLOWED_ORIGINS = "https://staging-app.peerteach.org"
+
+[env.staging.durable_objects]
+bindings = [
+    { name = "TLDRAW_DURABLE_OBJECT", class_name = "TldrawDurableObject" },
+]
+
+[[env.staging.r2_buckets]]
+binding = 'TLDRAW_BUCKET'
+bucket_name = 'peerteach-tldraw-content-staging'
